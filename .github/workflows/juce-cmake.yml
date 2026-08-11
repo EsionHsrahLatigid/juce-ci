@@ -118,12 +118,12 @@ jobs:
       fetchcontent-cache-hit: ${{ steps.restore-fetchcontent.outputs.cache-hit }}
       ccache-cache-hit: ${{ steps.restore-ccache.outputs.cache-hit }}
     env:
-      CCACHE_DIR: ${{ runner.temp }}/ehl-juce-ci/${{ inputs.dependency-cache-key }}/ccache
-      FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/ehl-juce-ci/${{ inputs.dependency-cache-key }}/fetchcontent
+      CCACHE_DIR: ${{ github.workspace }}/.cache/ehl-juce-ci/${{ inputs.dependency-cache-key }}/ccache
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.cache/ehl-juce-ci/${{ inputs.dependency-cache-key }}/fetchcontent
 
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Validate runner
         shell: bash
@@ -169,7 +169,7 @@ jobs:
       - name: Restore JUCE FetchContent cache
         id: restore-fetchcontent
         if: inputs.cache-fetchcontent
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: |
             ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-src
@@ -181,7 +181,7 @@ jobs:
       - name: Restore compiler cache
         id: restore-ccache
         if: inputs.use-ccache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ehl-juce-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-version }}-${{ inputs.dependency-cache-key }}-${{ github.sha }}
@@ -257,7 +257,7 @@ jobs:
 
       - name: Upload artifacts
         if: inputs.artifact-path != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact-name }}
           path: ${{ inputs.artifact-path }}
@@ -270,7 +270,7 @@ jobs:
           steps.restore-fetchcontent.outputs.cache-hit != 'true' &&
           github.event_name == 'push' &&
           github.ref_name == github.event.repository.default_branch
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: |
             ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-src
@@ -284,7 +284,7 @@ jobs:
           steps.restore-ccache.outputs.cache-hit != 'true' &&
           github.event_name == 'push' &&
           github.ref_name == github.event.repository.default_branch
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ${{ steps.restore-ccache.outputs.cache-primary-key }}

@@ -1,0 +1,290 @@
+name: Reusable JUCE CMake CI
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: GitHub-hosted Linux or macOS runner label.
+        required: false
+        type: string
+        default: ubuntu-24.04
+      source-directory:
+        description: CMake source directory relative to the caller workspace.
+        required: false
+        type: string
+        default: .
+      build-directory:
+        description: CMake build directory relative to the caller workspace.
+        required: false
+        type: string
+        default: build/ci
+      build-type:
+        description: CMake build type.
+        required: false
+        type: string
+        default: Release
+      cmake-generator:
+        description: CMake generator.
+        required: false
+        type: string
+        default: Ninja
+      cmake-options:
+        description: Whitespace-separated additional CMake configure arguments.
+        required: false
+        type: string
+        default: ""
+      build-targets:
+        description: Whitespace-separated CMake targets. Empty builds the default target.
+        required: false
+        type: string
+        default: ""
+      build-parallel:
+        description: Maximum parallel build jobs.
+        required: false
+        type: number
+        default: 2
+      run-tests:
+        description: Run CTest after the build.
+        required: false
+        type: boolean
+        default: true
+      test-directory:
+        description: CTest directory. Empty uses build-directory.
+        required: false
+        type: string
+        default: ""
+      test-filter:
+        description: Optional CTest regular expression passed to -R.
+        required: false
+        type: string
+        default: ""
+      install-build-tools:
+        description: Install Ninja and ccache when missing.
+        required: false
+        type: boolean
+        default: true
+      use-ccache:
+        description: Enable ccache and persist it across trusted default-branch pushes.
+        required: false
+        type: boolean
+        default: true
+      cache-fetchcontent:
+        description: Cache the JUCE FetchContent source and population metadata.
+        required: false
+        type: boolean
+        default: true
+      fetchcontent-name:
+        description: Lower-case CMake FetchContent dependency name.
+        required: false
+        type: string
+        default: juce
+      dependency-cache-key:
+        description: Stable dependency identity such as juce-8.0.15.
+        required: false
+        type: string
+        default: juce
+      cache-version:
+        description: Manual cache invalidation token.
+        required: false
+        type: string
+        default: v1
+      artifact-name:
+        description: Uploaded artifact name when artifact-path is set.
+        required: false
+        type: string
+        default: juce-build
+      artifact-path:
+        description: Newline-separated artifact paths. Empty disables upload.
+        required: false
+        type: string
+        default: ""
+    outputs:
+      fetchcontent-cache-hit:
+        description: Whether the exact FetchContent cache key was restored.
+        value: ${{ jobs.build.outputs.fetchcontent-cache-hit }}
+      ccache-cache-hit:
+        description: Whether the exact compiler cache key was restored.
+        value: ${{ jobs.build.outputs.ccache-cache-hit }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: JUCE CMake (${{ inputs.runs-on }})
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: 45
+    outputs:
+      fetchcontent-cache-hit: ${{ steps.restore-fetchcontent.outputs.cache-hit }}
+      ccache-cache-hit: ${{ steps.restore-ccache.outputs.cache-hit }}
+    env:
+      CCACHE_DIR: ${{ runner.temp }}/ehl-juce-ci/${{ inputs.dependency-cache-key }}/ccache
+      FETCHCONTENT_BASE_DIR: ${{ runner.temp }}/ehl-juce-ci/${{ inputs.dependency-cache-key }}/fetchcontent
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Validate runner
+        shell: bash
+        run: |
+          case "${RUNNER_OS}" in
+            Linux|macOS) ;;
+            *)
+              echo "Unsupported runner OS: ${RUNNER_OS}. v1 supports Linux and macOS." >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Install Linux build tools
+        if: inputs.install-build-tools && runner.os == 'Linux'
+        shell: bash
+        run: |
+          missing=()
+          command -v ninja >/dev/null 2>&1 || missing+=(ninja-build)
+          command -v ccache >/dev/null 2>&1 || missing+=(ccache)
+          if (( ${#missing[@]} )); then
+            sudo apt-get update
+            sudo apt-get install -y "${missing[@]}"
+          fi
+
+      - name: Install macOS build tools
+        if: inputs.install-build-tools && runner.os == 'macOS'
+        shell: bash
+        run: |
+          command -v ninja >/dev/null 2>&1 || brew install ninja
+          command -v ccache >/dev/null 2>&1 || brew install ccache
+
+      - name: Verify build tools
+        shell: bash
+        run: |
+          cmake --version
+          if [[ "${{ inputs.cmake-generator }}" == "Ninja" ]]; then
+            ninja --version
+          fi
+          if [[ "${{ inputs.use-ccache }}" == "true" ]]; then
+            ccache --version | head -n 1
+          fi
+
+      - name: Restore JUCE FetchContent cache
+        id: restore-fetchcontent
+        if: inputs.cache-fetchcontent
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-src
+            ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-subbuild
+          key: ehl-juce-fetch-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-version }}-${{ inputs.dependency-cache-key }}-${{ hashFiles('CMakeLists.txt', '**/CMakeLists.txt', 'cmake/**/*.cmake') }}
+          restore-keys: |
+            ehl-juce-fetch-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-version }}-${{ inputs.dependency-cache-key }}-
+
+      - name: Restore compiler cache
+        id: restore-ccache
+        if: inputs.use-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ehl-juce-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-version }}-${{ inputs.dependency-cache-key }}-${{ github.sha }}
+          restore-keys: |
+            ehl-juce-ccache-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-version }}-${{ inputs.dependency-cache-key }}-
+
+      - name: Configure
+        shell: bash
+        env:
+          INPUT_CMAKE_OPTIONS: ${{ inputs.cmake-options }}
+          INPUT_SOURCE_DIRECTORY: ${{ inputs.source-directory }}
+          INPUT_BUILD_DIRECTORY: ${{ inputs.build-directory }}
+          INPUT_BUILD_TYPE: ${{ inputs.build-type }}
+          INPUT_CMAKE_GENERATOR: ${{ inputs.cmake-generator }}
+        run: |
+          options=()
+          if [[ -n "${INPUT_CMAKE_OPTIONS}" ]]; then
+            read -r -a options <<< "${INPUT_CMAKE_OPTIONS}"
+          fi
+
+          cache_options=(-DFETCHCONTENT_BASE_DIR="${FETCHCONTENT_BASE_DIR}")
+          if [[ "${{ inputs.use-ccache }}" == "true" ]]; then
+            mkdir -p "${CCACHE_DIR}"
+            cache_options+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+          fi
+
+          cmake \
+            -S "${INPUT_SOURCE_DIRECTORY}" \
+            -B "${INPUT_BUILD_DIRECTORY}" \
+            -G "${INPUT_CMAKE_GENERATOR}" \
+            -DCMAKE_BUILD_TYPE="${INPUT_BUILD_TYPE}" \
+            "${cache_options[@]}" \
+            "${options[@]}"
+
+      - name: Build
+        shell: bash
+        env:
+          INPUT_BUILD_DIRECTORY: ${{ inputs.build-directory }}
+          INPUT_BUILD_TARGETS: ${{ inputs.build-targets }}
+          INPUT_BUILD_PARALLEL: ${{ inputs.build-parallel }}
+        run: |
+          target_args=()
+          if [[ -n "${INPUT_BUILD_TARGETS}" ]]; then
+            read -r -a targets <<< "${INPUT_BUILD_TARGETS}"
+            target_args=(--target "${targets[@]}")
+          fi
+          cmake --build "${INPUT_BUILD_DIRECTORY}" --parallel "${INPUT_BUILD_PARALLEL}" "${target_args[@]}"
+
+      - name: Test
+        if: inputs.run-tests
+        shell: bash
+        env:
+          INPUT_BUILD_DIRECTORY: ${{ inputs.build-directory }}
+          INPUT_TEST_DIRECTORY: ${{ inputs.test-directory }}
+          INPUT_TEST_FILTER: ${{ inputs.test-filter }}
+          INPUT_BUILD_TYPE: ${{ inputs.build-type }}
+        run: |
+          test_directory="${INPUT_TEST_DIRECTORY:-${INPUT_BUILD_DIRECTORY}}"
+          filter_args=()
+          if [[ -n "${INPUT_TEST_FILTER}" ]]; then
+            filter_args=(-R "${INPUT_TEST_FILTER}")
+          fi
+          ctest \
+            --test-dir "${test_directory}" \
+            --build-config "${INPUT_BUILD_TYPE}" \
+            --output-on-failure \
+            "${filter_args[@]}"
+
+      - name: Show compiler cache statistics
+        if: always() && inputs.use-ccache
+        shell: bash
+        run: ccache --show-stats || true
+
+      - name: Upload artifacts
+        if: inputs.artifact-path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ inputs.artifact-path }}
+          if-no-files-found: error
+
+      - name: Save JUCE FetchContent cache
+        if: >-
+          success() &&
+          inputs.cache-fetchcontent &&
+          steps.restore-fetchcontent.outputs.cache-hit != 'true' &&
+          github.event_name == 'push' &&
+          github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-src
+            ${{ env.FETCHCONTENT_BASE_DIR }}/${{ inputs.fetchcontent-name }}-subbuild
+          key: ${{ steps.restore-fetchcontent.outputs.cache-primary-key }}
+
+      - name: Save compiler cache
+        if: >-
+          success() &&
+          inputs.use-ccache &&
+          steps.restore-ccache.outputs.cache-hit != 'true' &&
+          github.event_name == 'push' &&
+          github.ref_name == github.event.repository.default_branch
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.restore-ccache.outputs.cache-primary-key }}

@@ -28,6 +28,8 @@ Trigger、concurrency、権限、製品inputはcaller側に残します。
 
 fail-closedなrelease昇格です。再buildは行いません。`vX.Y.Z` tagは、同じcommitに対する成功済み`main` push CI runが厳密に1件だけ存在する必要があります。Project/tag version、artifact ID、SHA-256、ZIP integrity、最終2 assetを検証します。
 
+手動復旧用のcallerは、tag trigger以外から既存semver tagを昇格するために`tag_name: vX.Y.Z`を渡せます。通常のtag push callerは省略し、`github.ref_name`を使います。
+
 ## セキュリティと再現性
 
 - 本repositoryとthird-party actionはimmutableな完全SHAへ固定します。

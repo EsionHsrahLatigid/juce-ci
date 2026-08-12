@@ -63,6 +63,8 @@ jobs:
       product_name: MyPlugin
 ```
 
+Manual recovery callers may pass `tag_name: vX.Y.Z` to promote an existing semver tag from a non-tag trigger. Normal tag-push callers omit it and use `github.ref_name`.
+
 ## Security and reproducibility
 
 - Pin this repository and third-party actions to immutable commit SHAs.

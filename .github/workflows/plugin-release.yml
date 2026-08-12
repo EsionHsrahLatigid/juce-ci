@@ -7,6 +7,11 @@ on:
         description: Product and CMake project name
         required: true
         type: string
+      tag_name:
+        description: Existing semver tag to promote, for manual recovery callers
+        required: false
+        default: ''
+        type: string
 
 permissions:
   actions: read
@@ -34,7 +39,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
           PRODUCT: ${{ inputs.product_name }}
         run: |
           set -euo pipefail
@@ -64,7 +69,7 @@ jobs:
           done
 
           runs="$(gh api --paginate \
-            "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&status=success&event=push&head_sha=$target_sha&per_page=100" \
+            "repos/$GH_REPO/actions/workflows/ci.yml/runs?branch=main&status=completed&event=push&head_sha=$target_sha&per_page=100" \
             --jq '.workflow_runs[] | select(.name == "CI" and .path == ".github/workflows/ci.yml" and .head_branch == "main" and .head_sha == "'"$target_sha"'" and .event == "push" and .status == "completed" and .conclusion == "success") | [.id, .head_sha] | @tsv')"
           [[ -n "$runs" ]]
           [[ "$(wc -l <<< "$runs" | tr -d ' ')" == 1 ]]
@@ -115,7 +120,7 @@ jobs:
       - name: Verify checksums and prepare versioned ZIPs
         shell: bash
         env:
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
           PRODUCT: ${{ inputs.product_name }}
         run: |
           set -euo pipefail
@@ -146,7 +151,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ github.ref_name }}
+          TAG_NAME: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
           PRODUCT: ${{ inputs.product_name }}
         run: |
           set -euo pipefail

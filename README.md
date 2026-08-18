@@ -50,7 +50,7 @@ jobs:
 
 ### `plugin-release.yml`
 
-Fail-closed release promotion. It rebuilds nothing: a `vX.Y.Z` tag must resolve to exactly one successful `main` push CI run for the same commit. The workflow verifies project/tag version equality, exact artifact IDs, SHA-256 manifests, ZIP integrity, and the final two-asset release set.
+Fail-closed release promotion. It rebuilds nothing: a `vX.Y.Z` tag must resolve to exactly one successful `main` push CI run for the same commit. The workflow verifies project/tag version equality, exact artifact IDs, SHA-256 manifests, ZIP integrity, and the final two-asset release set. The macOS candidate is signed with Developer ID Application, notarized, stapled, and reverified before publication; the unsigned CI ZIP is never promoted as a public release asset.
 
 ```yaml
 jobs:
@@ -59,17 +59,30 @@ jobs:
     permissions:
       actions: read
       contents: write
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+      MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+      APPLE_API_PRIVATE_KEY_P8_BASE64: ${{ secrets.APPLE_API_PRIVATE_KEY_P8_BASE64 }}
     with:
       product_name: MyPlugin
 ```
 
 Manual recovery callers may pass `tag_name: vX.Y.Z` to promote an existing semver tag from a non-tag trigger. Normal tag-push callers omit it and use `github.ref_name`.
 
+Every caller repository must configure a protected `release` environment before enabling signing secrets. Apply tag/branch restrictions and required reviewers there. Keep the six signing values as organization or repository secrets mapped by the caller; do not duplicate same-named values as environment secrets. Runs for the same repository and tag are serialized and never cancel an in-flight notarization.
+
 ## Security and reproducibility
 
 - Pin this repository and third-party actions to immutable commit SHAs.
 - Caller permissions can only reduce the reusable workflow permissions.
 - Release promotion accepts artifacts from one exact successful commit only.
+- Signing secrets are explicitly mapped by name and are available only to the macOS signing job.
+- Signing and publication jobs use the caller repository's protected `release` environment.
+- Use an App Store Connect Team API key; Individual API keys are not accepted by `notarytool`.
+- The temporary notarization ZIP is not a release asset. The workflow staples each bundle and creates a fresh public ZIP afterward.
 - Submodule commits are resolved by the caller repository, not a floating branch.
 
 ## Licence

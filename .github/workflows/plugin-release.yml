@@ -12,15 +12,46 @@ on:
         required: false
         default: ''
         type: string
+    secrets:
+      MACOS_CERTIFICATE_P12_BASE64:
+        description: Base64-encoded Developer ID Application PKCS#12 archive
+        required: true
+      MACOS_CERTIFICATE_PASSWORD:
+        description: Password for the PKCS#12 archive
+        required: true
+      APPLE_TEAM_ID:
+        description: Apple Developer Team ID used by the signing identity
+        required: true
+      APPLE_API_KEY_ID:
+        description: App Store Connect Team API key ID
+        required: true
+      APPLE_API_ISSUER_ID:
+        description: App Store Connect Team API issuer ID
+        required: true
+      APPLE_API_PRIVATE_KEY_P8_BASE64:
+        description: Base64-encoded App Store Connect Team API private key
+        required: true
 
 permissions:
-  actions: read
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.repository }}-${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Promote exact-SHA artifacts
+  provenance:
+    name: Resolve exact-SHA artifacts
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      mac_id: ${{ steps.artifacts.outputs.mac_id }}
+      run_id: ${{ steps.provenance.outputs.run_id }}
+      tag_name: ${{ steps.provenance.outputs.tag_name }}
+      version: ${{ steps.provenance.outputs.version }}
+      windows_id: ${{ steps.artifacts.outputs.windows_id }}
     steps:
       - name: Verify toolchain
         shell: bash
@@ -77,8 +108,8 @@ jobs:
           [[ "$run_sha" == "$target_sha" ]]
 
           {
-            printf 'tag_commit=%s\n' "$target_sha"
             printf 'run_id=%s\n' "$run_id"
+            printf 'tag_name=%s\n' "$TAG_NAME"
             printf 'version=%s\n' "$version"
           } >> "$GITHUB_OUTPUT"
 
@@ -100,77 +131,190 @@ jobs:
           [[ "$windows_id" =~ ^[0-9]+$ ]]
           printf 'mac_id=%s\nwindows_id=%s\n' "$mac_id" "$windows_id" >> "$GITHUB_OUTPUT"
 
-      - name: Download exact artifacts
+  sign-macos:
+    name: Sign and notarize macOS
+    needs: provenance
+    runs-on: macos-15
+    environment: release
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download exact macOS artifact
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          MAC_ID: ${{ steps.artifacts.outputs.mac_id }}
-          WINDOWS_ID: ${{ steps.artifacts.outputs.windows_id }}
+          MAC_ID: ${{ needs.provenance.outputs.mac_id }}
         run: |
           set -euo pipefail
-          mkdir -p artifacts/macos artifacts/windows
+          mkdir -p artifacts/macos release-candidate
           gh api -H "Accept: application/vnd.github+json" \
             "repos/$GH_REPO/actions/artifacts/$MAC_ID/zip" > artifacts/macos.zip
-          gh api -H "Accept: application/vnd.github+json" \
-            "repos/$GH_REPO/actions/artifacts/$WINDOWS_ID/zip" > artifacts/windows.zip
           unzip -q artifacts/macos.zip -d artifacts/macos
-          unzip -q artifacts/windows.zip -d artifacts/windows
 
-      - name: Verify checksums and prepare versioned ZIPs
+      - name: Verify unsigned artifact checksum
         shell: bash
         env:
-          TAG_NAME: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
           PRODUCT: ${{ inputs.product_name }}
         run: |
           set -euo pipefail
-          verify_payload() {
-            local directory="$1"
-            local expected_zip="$2"
-            local manifest="$directory/SHA256SUMS.txt"
-            [[ -f "$directory/$expected_zip" ]]
-            [[ -f "$manifest" ]]
-            [[ "$(wc -l < "$manifest" | tr -d ' ')" == 1 ]]
-            local line
-            line="$(cat "$manifest")"
-            [[ "$line" =~ ^[0-9a-f]{64}\ \ [A-Za-z0-9._-]+$ ]]
-            [[ "${line#*  }" == "$expected_zip" ]]
-            (cd "$directory" && sha256sum --check --strict SHA256SUMS.txt)
-          }
+          expected_zip="${PRODUCT}-latest-macos-arm64.zip"
+          manifest="artifacts/macos/SHA256SUMS.txt"
+          [[ -f "artifacts/macos/$expected_zip" ]]
+          [[ -f "$manifest" ]]
+          [[ "$(wc -l < "$manifest" | tr -d ' ')" == 1 ]]
+          line="$(cat "$manifest")"
+          [[ "$line" =~ ^[0-9a-f]{64}\ \ [A-Za-z0-9._-]+$ ]]
+          [[ "${line#*  }" == "$expected_zip" ]]
+          expected_hash="${line%%  *}"
+          [[ "$(shasum -a 256 "artifacts/macos/$expected_zip" | awk '{print $1}')" == "$expected_hash" ]]
 
-          verify_payload artifacts/macos "${PRODUCT}-latest-macos-arm64.zip"
-          verify_payload artifacts/windows "${PRODUCT}-latest-windows-x64.zip"
-          version="${TAG_NAME#v}"
-          cp "artifacts/macos/${PRODUCT}-latest-macos-arm64.zip" "${PRODUCT}-${version}-macos-arm64.zip"
-          cp "artifacts/windows/${PRODUCT}-latest-windows-x64.zip" "${PRODUCT}-${version}-windows-x64.zip"
-          unzip -t "${PRODUCT}-${version}-macos-arm64.zip"
-          unzip -t "${PRODUCT}-${version}-windows-x64.zip"
+      - name: Sign, notarize, staple, and reverify
+        id: signing
+        uses: EsionHsrahLatigid/ehl-macos-signing-action@d617fbee3eafb0d4cade2acc77f31da016712ce9
+        with:
+          product-name: ${{ inputs.product_name }}
+          input-zip: artifacts/macos/${{ inputs.product_name }}-latest-macos-arm64.zip
+          output-zip: release-candidate/${{ inputs.product_name }}-${{ needs.provenance.outputs.version }}-macos-arm64.zip
+          certificate-p12-base64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          certificate-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
+          apple-api-key-id: ${{ secrets.APPLE_API_KEY_ID }}
+          apple-api-issuer-id: ${{ secrets.APPLE_API_ISSUER_ID }}
+          apple-api-private-key-p8-base64: ${{ secrets.APPLE_API_PRIVATE_KEY_P8_BASE64 }}
+
+      - name: Record signed candidate checksum
+        shell: bash
+        env:
+          PRODUCT: ${{ inputs.product_name }}
+          VERSION: ${{ needs.provenance.outputs.version }}
+          SIGNED_SHA256: ${{ steps.signing.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          zip_name="${PRODUCT}-${VERSION}-macos-arm64.zip"
+          [[ "$SIGNED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          printf '%s  %s\n' "$SIGNED_SHA256" "$zip_name" > "release-candidate/${zip_name}.sha256"
+
+      - name: Upload signed release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: signed-macos-release-candidate
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 1
+
+  prepare-windows:
+    name: Prepare Windows candidate
+    needs: provenance
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Download and verify exact Windows artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PRODUCT: ${{ inputs.product_name }}
+          VERSION: ${{ needs.provenance.outputs.version }}
+          WINDOWS_ID: ${{ needs.provenance.outputs.windows_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/windows release-candidate
+          gh api -H "Accept: application/vnd.github+json" \
+            "repos/$GH_REPO/actions/artifacts/$WINDOWS_ID/zip" > artifacts/windows.zip
+          unzip -q artifacts/windows.zip -d artifacts/windows
+          expected_zip="${PRODUCT}-latest-windows-x64.zip"
+          manifest="artifacts/windows/SHA256SUMS.txt"
+          [[ -f "artifacts/windows/$expected_zip" ]]
+          [[ -f "$manifest" ]]
+          [[ "$(wc -l < "$manifest" | tr -d ' ')" == 1 ]]
+          line="$(cat "$manifest")"
+          [[ "$line" =~ ^[0-9a-f]{64}\ \ [A-Za-z0-9._-]+$ ]]
+          [[ "${line#*  }" == "$expected_zip" ]]
+          (cd artifacts/windows && sha256sum --check --strict SHA256SUMS.txt)
+          versioned_zip="${PRODUCT}-${VERSION}-windows-x64.zip"
+          cp "artifacts/windows/$expected_zip" "release-candidate/$versioned_zip"
+          unzip -t "release-candidate/$versioned_zip"
+          (cd release-candidate && sha256sum "$versioned_zip" > "${versioned_zip}.sha256")
+
+      - name: Upload Windows release candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-release-candidate
+          path: release-candidate/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish verified release
+    needs:
+      - provenance
+      - sign-macos
+      - prepare-windows
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download signed macOS candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: signed-macos-release-candidate
+          path: release-candidates
+
+      - name: Download Windows candidate
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-release-candidate
+          path: release-candidates
+
+      - name: Verify release candidates
+        shell: bash
+        env:
+          PRODUCT: ${{ inputs.product_name }}
+          VERSION: ${{ needs.provenance.outputs.version }}
+        run: |
+          set -euo pipefail
+          mac_zip="${PRODUCT}-${VERSION}-macos-arm64.zip"
+          windows_zip="${PRODUCT}-${VERSION}-windows-x64.zip"
+          [[ "$(find release-candidates -maxdepth 1 -type f | wc -l | tr -d ' ')" == 4 ]]
+          (cd release-candidates && sha256sum --check --strict "${mac_zip}.sha256")
+          (cd release-candidates && sha256sum --check --strict "${windows_zip}.sha256")
+          unzip -t "release-candidates/$mac_zip"
+          unzip -t "release-candidates/$windows_zip"
 
       - name: Publish release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG_NAME: ${{ inputs.tag_name != '' && inputs.tag_name || github.ref_name }}
+          TAG_NAME: ${{ needs.provenance.outputs.tag_name }}
           PRODUCT: ${{ inputs.product_name }}
+          VERSION: ${{ needs.provenance.outputs.version }}
         run: |
           set -euo pipefail
-          version="${TAG_NAME#v}"
+          mac_zip="${PRODUCT}-${VERSION}-macos-arm64.zip"
+          windows_zip="${PRODUCT}-${VERSION}-windows-x64.zip"
           if gh release view "$TAG_NAME" >/dev/null 2>&1; then
             is_draft="$(gh release view "$TAG_NAME" --json isDraft --jq '.isDraft')"
             [[ "$is_draft" == true ]]
           else
             gh release create "$TAG_NAME" --verify-tag --draft \
-              --title "$PRODUCT $version" --generate-notes
+              --title "$PRODUCT $VERSION" --generate-notes
           fi
           while IFS= read -r existing_asset; do
             [[ -z "$existing_asset" ]] || gh release delete-asset "$TAG_NAME" "$existing_asset" --yes
           done < <(gh release view "$TAG_NAME" --json assets --jq '.assets[].name')
           gh release upload "$TAG_NAME" \
-            "${PRODUCT}-${version}-macos-arm64.zip" \
-            "${PRODUCT}-${version}-windows-x64.zip" --clobber
+            "release-candidates/$mac_zip" \
+            "release-candidates/$windows_zip" --clobber
           mapfile -t published_assets < <(gh release view "$TAG_NAME" --json assets --jq '.assets[].name' | LC_ALL=C sort)
           [[ "${#published_assets[@]}" == 2 ]]
-          [[ "${published_assets[0]}" == "${PRODUCT}-${version}-macos-arm64.zip" ]]
-          [[ "${published_assets[1]}" == "${PRODUCT}-${version}-windows-x64.zip" ]]
+          [[ "${published_assets[0]}" == "$mac_zip" ]]
+          [[ "${published_assets[1]}" == "$windows_zip" ]]
           gh release edit "$TAG_NAME" --draft=false

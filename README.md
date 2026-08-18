@@ -72,6 +72,8 @@ jobs:
 
 Manual recovery callers may pass `tag_name: vX.Y.Z` to promote an existing semver tag from a non-tag trigger. Normal tag-push callers omit it and use `github.ref_name`.
 
+Canary callers may pass `publish_release: false`. This still resolves the exact successful CI run, signs, notarizes, staples, reverifies, and uploads the signed macOS release candidate artifact, but it skips Windows candidate preparation and makes no GitHub Release changes.
+
 Every caller repository must configure a protected `release` environment before enabling signing secrets. Apply tag/branch restrictions and required reviewers there. Keep the six signing values as organization or repository secrets mapped by the caller; do not duplicate same-named values as environment secrets. Runs for the same repository and tag are serialized and never cancel an in-flight notarization.
 
 ## Security and reproducibility
@@ -81,6 +83,7 @@ Every caller repository must configure a protected `release` environment before 
 - Release promotion accepts artifacts from one exact successful commit only.
 - Signing secrets are explicitly mapped by name and are available only to the macOS signing job.
 - Signing and publication jobs use the caller repository's protected `release` environment.
+- `publish_release: false` keeps the protected signing environment and signed candidate artifact path while disabling public release mutation.
 - Use an App Store Connect Team API key; Individual API keys are not accepted by `notarytool`.
 - The temporary notarization ZIP is not a release asset. The workflow staples each bundle and creates a fresh public ZIP afterward.
 - Submodule commits are resolved by the caller repository, not a floating branch.

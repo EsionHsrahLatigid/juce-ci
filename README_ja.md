@@ -32,6 +32,8 @@ Callerは`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_
 
 手動復旧用のcallerは、tag trigger以外から既存semver tagを昇格するために`tag_name: vX.Y.Z`を渡せます。通常のtag push callerは省略し、`github.ref_name`を使います。
 
+Canary用callerは`publish_release: false`を渡せます。この場合も成功済みCI runを完全一致で解決し、macOS候補の署名・公証・staple・再検証・signed candidate artifact uploadを行いますが、Windows候補作成とGitHub Release変更はskipします。
+
 署名secretを有効化する前に、各caller repositoryへ保護された`release` environmentを設定します。tag/branch制限とrequired reviewerを設定してください。6つの署名値はcallerが明示的に渡すorganization/repository secretとして保持し、同名のenvironment secretを重複定義しません。同じrepository/tagのrunは直列化し、進行中の公証をcancelしません。
 
 ## セキュリティと再現性
@@ -41,6 +43,7 @@ Callerは`MACOS_CERTIFICATE_P12_BASE64`、`MACOS_CERTIFICATE_PASSWORD`、`APPLE_
 - Releaseは成功した単一の完全一致commitからのみ昇格します。
 - 署名secretは名前を明示して渡し、macOS署名jobだけで利用します。
 - 署名jobと公開jobはcaller repositoryの保護された`release` environmentを使います。
+- `publish_release: false`は保護された署名environmentとsigned candidate artifactの経路を維持しつつ、公開releaseの変更を無効にします。
 - `notarytool`にはApp Store ConnectのTeam API keyを使用します。Individual API keyは利用できません。
 - 公証提出用の一時ZIPはrelease assetにしません。各bundleをstapleした後、新しい公開ZIPを作成します。
 - Submodule commitはfloating branchではなくcaller repositoryで確定します。
